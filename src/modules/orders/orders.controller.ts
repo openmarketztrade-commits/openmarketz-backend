@@ -16,6 +16,8 @@ import { CheckoutDto } from './dto/checkout.dto.js';
 import { CheckoutQuoteDto } from './dto/checkout-quote.dto.js';
 import { UpdateShipmentDto } from './dto/update-shipment.dto.js';
 import { OrdersService } from './orders.service.js';
+import { ShippingRatesDto } from './dto/shipping-rates.dto.js';
+import { BookShippingDto } from './dto/book-shipping.dto.js';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -67,6 +69,24 @@ export class OrdersController {
   @Get(':id')
   getOrder(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.orders.getOrder(user, id);
+  }
+
+  @Post(':id/shipping/rates')
+  getShippingRates(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: ShippingRatesDto,
+  ) {
+    return this.orders.getShippingRates(user.id, id, body);
+  }
+
+  @Post(':id/shipping/book')
+  bookShipping(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: BookShippingDto,
+  ) {
+    return this.orders.bookShipping(user.id, id, body);
   }
 
   @Patch(':id/shipment')

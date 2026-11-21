@@ -24,6 +24,25 @@ export class CatalogController {
   }
 
   @Public()
+  @Get('stores/:slug')
+  @ApiOperation({ summary: 'Read an active public seller store' })
+  getStore(@Param('slug') slug: string) {
+    return this.catalog.getPublicStore(slug);
+  }
+
+  @Public()
+  @Get('stores/:slug/products')
+  @ApiOperation({ summary: 'Browse active products from a seller store' })
+  listStoreProducts(
+    @Param('slug') slug: string,
+    @Query() query: ListProductsDto,
+  ) {
+    return this.catalog.listPublicProducts(
+      Object.assign(new ListProductsDto(), query, { sellerSlug: slug }),
+    );
+  }
+
+  @Public()
   @Get('products/:slug')
   @ApiOperation({ summary: 'Read an active public product by slug' })
   getProduct(@Param('slug') slug: string) {

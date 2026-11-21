@@ -73,7 +73,10 @@ export class CatalogService {
     const limit = query.limit ?? 24;
     const where: Prisma.ProductWhereInput = {
       status: ProductStatus.ACTIVE,
-      seller: { active: true },
+      seller: {
+        active: true,
+        ...(query.sellerSlug ? { slug: query.sellerSlug } : {}),
+      },
       ...(query.category
         ? { category: { slug: query.category.toLowerCase(), active: true } }
         : {}),
@@ -107,6 +110,35 @@ export class CatalogService {
       limit,
       total,
       pages: Math.ceil(total / limit),
+    };
+  }
+
+  async getPublicStore(slug: string) {
+    const store = await this.prisma.sellerStore.findFirst({
+      where: { slug, active: true },
+      include: {
+        logoMedia: { select: { secureUrl: true } },
+        bannerMedia: { select: { secureUrl: true } },
+        _count: {
+          select: { products: { where: { status: ProductStatus.ACTIVE } } },
+        },
+      },
+    });
+    if (!store) throw new NotFoundException('Store not found.');
+    return {
+      id: store.id,
+      slug: store.slug,
+      name: store.name,
+      tagline: store.tagline,
+      about: store.about,
+      location: store.location,
+      verified: store.verified,
+      rating: Number(store.rating),
+      reviewCount: store.reviewCount,
+      logoUrl: store.logoMedia?.secureUrl ?? null,
+      bannerUrl: store.bannerMedia?.secureUrl ?? null,
+      createdAt: store.createdAt,
+      productCount: store._count.products,
     };
   }
 

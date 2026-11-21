@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
@@ -23,6 +24,9 @@ import { PaymentsService } from '../payments/payments.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { CheckoutDto } from './dto/checkout.dto.js';
 import { UpdateShipmentDto } from './dto/update-shipment.dto.js';
+import { ShippingRatesDto } from './dto/shipping-rates.dto.js';
+import { BookShippingDto } from './dto/book-shipping.dto.js';
+import { ShipbubbleService } from './shipbubble.service.js';
 
 const serviceFeeBasisPoints = 150;
 const orderInclude = {
@@ -56,6 +60,7 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
     private readonly payments: PaymentsService,
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService,
+    private readonly shipbubble: ShipbubbleService,
   ) {}
 
   onModuleInit() {
@@ -571,14 +576,276 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
     return this.toOrder(order, isSeller ? user.id : undefined);
   }
 
+  async getShippingRates(
+    userId: string,
+    orderId: string,
+    input: ShippingRatesDto,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        buyer: { select: { email: true } },
+        items: { include: { seller: true } },
+        address: true,
+        shipments: true,
+      },
+    });
+    if (!order || !order.items.some((item) => item.seller.ownerId === userId)) {
+      throw new NotFoundException('Seller order not found.');
+    }
+    if (
+      order.status === OrderStatus.PENDING_PAYMENT ||
+      order.status === OrderStatus.CANCELLED
+    ) {
+      throw new ConflictException(
+        'Shipping can only be arranged for a paid order.',
+      );
+    }
+    const sellerId = order.items.find(
+      (item) => item.seller.ownerId === userId,
+    )!.sellerId;
+    const shipment =
+      order.shipments.find((entry) => entry.sellerId === sellerId) ??
+      (order.shipments.length === 1 ? order.shipments[0] : undefined);
+    if (!shipment) throw new ConflictException('Shipment record is not ready.');
+    if (shipment.providerOrderId)
+      throw new ConflictException('This shipment has already been booked.');
+    if (shipment.sellerId !== sellerId)
+      await this.prisma.shipment.update({
+        where: { id: shipment.id },
+        data: { sellerId },
+      });
+    const application = await this.prisma.sellerApplication.findUnique({
+      where: { userId },
+      select: {
+        ownerName: true,
+        businessPhone: true,
+        businessEmail: true,
+        address: true,
+        city: true,
+        region: true,
+        country: true,
+        shipbubbleAddressCode: true,
+      },
+    });
+    if (!application)
+      throw new ConflictException(
+        'Complete seller business address details before booking delivery.',
+      );
+    const snapshot = order.addressSnapshot as Record<string, unknown>;
+    const receiverName = this.toText(snapshot.fullName);
+    const receiverPhone = this.toText(snapshot.phone);
+    const receiverAddress = [
+      this.toText(snapshot.line1),
+      this.toText(snapshot.landmark),
+    ]
+      .filter(Boolean)
+      .join(', ');
+    const recipientCode = order.address?.shipbubbleAddressCode;
+    const senderCode = application.shipbubbleAddressCode;
+    const [fromCode, toCode] = await Promise.all([
+      senderCode
+        ? Promise.resolve(senderCode)
+        : this.validateShipbubbleAddress({
+            name: application.ownerName,
+            email: application.businessEmail,
+            phone: application.businessPhone,
+            address: application.address,
+            city: application.city,
+            state: application.region,
+            country: application.country,
+          }),
+      recipientCode
+        ? Promise.resolve(recipientCode)
+        : this.validateShipbubbleAddress({
+            name: receiverName,
+            email: order.buyer.email,
+            phone: receiverPhone,
+            address: receiverAddress,
+            city: this.toText(snapshot.city),
+            state: this.toText(snapshot.state),
+            country: this.toText(snapshot.country, 'Nigeria'),
+            ...(typeof snapshot.latitude === 'number' &&
+            typeof snapshot.longitude === 'number'
+              ? { latitude: snapshot.latitude, longitude: snapshot.longitude }
+              : {}),
+          }),
+    ]);
+    if (!senderCode)
+      await this.prisma.sellerApplication.update({
+        where: { userId },
+        data: { shipbubbleAddressCode: fromCode },
+      });
+    if (!recipientCode && order.addressId)
+      await this.prisma.address.update({
+        where: { id: order.addressId },
+        data: { shipbubbleAddressCode: toCode },
+      });
+    const categoriesPayload = await this.shipbubble.request<unknown>(
+      '/shipping/labels/categories',
+    );
+    const categories = Array.isArray(categoriesPayload)
+      ? categoriesPayload
+      : this.readArray(categoriesPayload, 'categories');
+    const category = categories[0] as Record<string, unknown> | undefined;
+    const categoryId = category?.id ?? category?.category_id;
+    if (!categoryId)
+      throw new ServiceUnavailableException(
+        'Shipbubble did not return a package category.',
+      );
+    const items = order.items.filter((item) => item.sellerId === sellerId);
+    const data = await this.shipbubble.request<unknown>(
+      '/shipping/fetch_rates',
+      {
+        sender_address_code: fromCode,
+        reciever_address_code: toCode,
+        pickup_date: new Date(Date.now() + 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+        category_id: categoryId,
+        package_items: items.map((item) => ({
+          name: item.productName,
+          description: item.productName,
+          unit_weight:
+            input.packageWeightKg /
+            items.reduce((sum, current) => sum + current.quantity, 0),
+          unit_amount: Number(item.unitPriceKobo / 100n),
+          quantity: item.quantity,
+        })),
+        package_dimension: {
+          length: input.lengthCm,
+          width: input.widthCm,
+          height: input.heightCm,
+        },
+      },
+    );
+    const root = data as Record<string, unknown>;
+    const rates = Array.isArray(root.couriers)
+      ? root.couriers
+      : this.readArray(data, 'rates');
+    return {
+      requestToken: this.toText(root.request_token ?? root.requestToken),
+      couriers: rates
+        .map((entry) => {
+          const rate = entry as Record<string, unknown>;
+          return {
+            courierId: this.toText(rate.courier_id ?? rate.courierId),
+            courierName: this.toText(
+              rate.courier_name ?? rate.courierName ?? rate.name,
+            ),
+            serviceCode: this.toText(rate.service_code ?? rate.serviceCode),
+            serviceType: this.toText(rate.service_type ?? rate.serviceType),
+            total: Number(rate.total ?? rate.amount ?? 0),
+            deliveryEta: this.toText(
+              rate.delivery_eta ?? rate.deliveryEta ?? rate.delivery_time,
+            ),
+            trackingLevel: this.toText(
+              rate.tracking_level ?? rate.trackingLevel,
+            ),
+          };
+        })
+        .filter((rate) => rate.courierId && rate.serviceCode),
+    };
+  }
+
+  async bookShipping(userId: string, orderId: string, input: BookShippingDto) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: { include: { seller: true } }, shipments: true },
+    });
+    if (!order || !order.items.some((item) => item.seller.ownerId === userId))
+      throw new NotFoundException('Seller order not found.');
+    if (
+      order.status === OrderStatus.PENDING_PAYMENT ||
+      order.status === OrderStatus.CANCELLED
+    )
+      throw new ConflictException(
+        'Shipping can only be booked for a paid order.',
+      );
+    const sellerId = order.items.find(
+      (item) => item.seller.ownerId === userId,
+    )!.sellerId;
+    const shipment =
+      order.shipments.find((entry) => entry.sellerId === sellerId) ??
+      (order.shipments.length === 1 ? order.shipments[0] : undefined);
+    if (!shipment) throw new ConflictException('Shipment record is not ready.');
+    if (shipment.providerOrderId)
+      throw new ConflictException('This shipment has already been booked.');
+    const label = await this.shipbubble.request<unknown>('/shipping/labels', {
+      request_token: input.requestToken,
+      courier_id: input.courierId,
+      service_code: input.serviceCode,
+    });
+    const record = label as Record<string, unknown>;
+    const tracking = (record.tracking ?? {}) as Record<string, unknown>;
+    const refreshed = await this.prisma.shipment.update({
+      where: { id: shipment.id },
+      data: {
+        sellerId,
+        method: 'shipbubble',
+        carrier: this.toText(
+          record.courier_name ?? record.courier,
+          'Shipbubble',
+        ),
+        serviceCode: input.serviceCode,
+        providerOrderId: this.toText(record.order_id ?? record.shipment_id),
+        waybill: this.toText(record.tracking_code ?? record.waybill),
+        trackingUrl: this.toText(record.tracking_url ?? tracking.url),
+        waybillDocument:
+          typeof record.waybill_document === 'string'
+            ? record.waybill_document
+            : null,
+        status: FulfilmentStatus.PACKED,
+      },
+    });
+    const fullOrder = await this.prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+      include: orderInclude,
+    });
+    return { ...this.toOrder(fullOrder, userId), shipment: refreshed };
+  }
+
+  private async validateShipbubbleAddress(
+    input: Record<string, unknown>,
+  ): Promise<string> {
+    const data = await this.shipbubble.request<unknown>(
+      '/shipping/address/validate',
+      input,
+    );
+    const value = data as Record<string, unknown>;
+    const code = value.address_code ?? value.addressCode;
+    if (!code)
+      throw new ServiceUnavailableException(
+        'Shipbubble did not provide an address code.',
+      );
+    return this.toText(code);
+  }
+
+  private toText(value: unknown, fallback = ''): string {
+    return typeof value === 'string' || typeof value === 'number'
+      ? String(value)
+      : fallback;
+  }
+
+  private readArray(value: unknown, key: string): unknown[] {
+    if (!value || typeof value !== 'object') return [];
+    const record = value as Record<string, unknown>;
+    return Array.isArray(record[key]) ? record[key] : [];
+  }
+
   async updateShipment(
     userId: string,
     orderId: string,
     input: UpdateShipmentDto,
   ) {
+    const store = await this.prisma.sellerStore.findUnique({
+      where: { ownerId: userId },
+      select: { id: true },
+    });
     const shipment = await this.prisma.shipment.findFirst({
       where: {
         orderId,
+        ...(store ? { sellerId: store.id } : {}),
         order: { items: { some: { seller: { ownerId: userId } } } },
       },
       orderBy: { createdAt: 'desc' },
@@ -663,12 +930,17 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
     const order = await this.prisma.order.findFirst({
       where: { id: orderId, buyerId: userId },
       include: {
-        shipments: { orderBy: { createdAt: 'desc' }, take: 1 },
+        shipments: { orderBy: { createdAt: 'desc' } },
         items: { include: { seller: { select: { ownerId: true } } } },
       },
     });
     if (!order) throw new NotFoundException('Order not found.');
-    if (order.shipments[0]?.status !== FulfilmentStatus.DELIVERED) {
+    if (
+      !order.shipments.length ||
+      order.shipments.some(
+        (shipment) => shipment.status !== FulfilmentStatus.DELIVERED,
+      )
+    ) {
       throw new ConflictException(
         'Delivery must be recorded before confirming receipt.',
       );
@@ -698,14 +970,17 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
   async confirmAdminDelivery(orderId: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { shipments: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: { shipments: { orderBy: { createdAt: 'desc' } } },
     });
     if (!order) throw new NotFoundException('Order not found.');
     if (
       (order.status !== OrderStatus.PLACED &&
         order.status !== OrderStatus.OUT_FOR_DELIVERY) ||
       !order.buyerConfirmedDeliveredAt ||
-      order.shipments[0]?.status !== FulfilmentStatus.DELIVERED
+      !order.shipments.length ||
+      order.shipments.some(
+        (shipment) => shipment.status !== FulfilmentStatus.DELIVERED,
+      )
     ) {
       throw new ConflictException(
         'Buyer confirmation and delivered status are required.',
@@ -885,7 +1160,27 @@ export class OrdersService implements OnModuleInit, OnModuleDestroy {
         amount: Number(payment.amountKobo / 100n),
         amountKobo: undefined,
       })),
-      shipment: order.shipments[0] ?? null,
+      shipments: order.shipments.filter(
+        (shipment) =>
+          !sellerUserId ||
+          order.items.some(
+            (item) =>
+              item.seller.ownerId === sellerUserId &&
+              item.sellerId === shipment.sellerId,
+          ),
+      ),
+      shipment:
+        order.shipments.find(
+          (shipment) =>
+            !sellerUserId ||
+            order.items.some(
+              (item) =>
+                item.seller.ownerId === sellerUserId &&
+                item.sellerId === shipment.sellerId,
+            ),
+        ) ??
+        order.shipments[0] ??
+        null,
       buyerConfirmedDeliveredAt: order.buyerConfirmedDeliveredAt,
       adminConfirmedDeliveredAt: order.adminConfirmedDeliveredAt,
       paidAt: order.paidAt,

@@ -26,9 +26,11 @@ const environmentSchema = Joi.object({
   CLOUDINARY_API_KEY: Joi.string().empty(''),
   CLOUDINARY_API_SECRET: Joi.string().empty(''),
   PAYSTACK_SECRET_KEY: Joi.string().empty(''),
+  SHIPBUBBLE_API_KEY: Joi.string().empty(''),
   PAYSTACK_PUBLIC_KEY: Joi.string().empty(''),
   PAYSTACK_CALLBACK_URL: Joi.string().uri().empty(''),
-  GOOGLE_MAPS_API_KEY: Joi.string().empty(''),
+  GEOAPIFY_API_KEY: Joi.string().empty(''),
+  // GOOGLE_MAPS_API_KEY: Joi.string().empty(''), // Legacy provider, disabled.
   AUTH_EMAIL_MODE: Joi.string()
     .valid('resend', 'console', 'gmail')
     .default('resend'),

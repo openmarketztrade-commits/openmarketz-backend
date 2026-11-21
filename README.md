@@ -11,7 +11,7 @@ Standalone NestJS API project for OpenMarketz. The Next.js frontend connects to 
 - Socket.IO dependencies for buyer/seller chat
 - Resend dependency for email delivery
 
-The API includes authenticated cart and address management, Google Places lookup, inventory-reserving checkout, Paystack payment initialization/verification/webhooks, saved Paystack authorizations, seller settlement controls, order history and delivery confirmations, Open Market requests and responses, wishlists and gifts, reviews, notifications, and support tickets. Upload intents sign only parameters accepted by Cloudinary's upload API; purpose-specific file-size limits are enforced by the browser and rechecked against Cloudinary's asset metadata during finalization.
+The API includes authenticated cart and address management, Geoapify address autocomplete and place lookup, inventory-reserving checkout, Paystack payment initialization/verification/webhooks, saved Paystack authorizations, seller settlement controls, order history and delivery confirmations, Open Market requests and responses, wishlists and gifts, reviews, notifications, and support tickets. Upload intents sign only parameters accepted by Cloudinary's upload API; purpose-specific file-size limits are enforced by the browser and rechecked against Cloudinary's asset metadata during finalization.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ For local signup and password-reset testing, set `AUTH_EMAIL_MODE=gmail` and pro
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Media upload implementation                 | Server-side Cloudinary signing credentials                                                   |
 | `PAYSTACK_SECRET_KEY`, `PAYSTACK_CALLBACK_URL`                          | Payment implementation                      | Server-side Paystack transaction setup and browser return URL; a public key is not needed for hosted checkout |
 | `PENDING_ORDER_TTL_MINUTES`                                            | Pending checkout expiry                     | Minutes before an unpaid order expires (5–1440; defaults to 30)                              |
-| `GOOGLE_MAPS_API_KEY`                                                 | Address search                               | Server-side Google Places API (New) key; restrict it to Places API and keep it out of frontend variables |
+| `GEOAPIFY_API_KEY`                                                    | Address search                               | Server-side Geoapify Geocoding and Place Details API key; keep it out of frontend variables          |
 | `AUTH_EMAIL_MODE`                                                      | Email delivery                              | `console`, development-only `gmail`, or `resend`                                             |
 | `GMAIL_USER`, `GMAIL_APP_PASSWORD`                                     | Gmail SMTP delivery                         | Gmail address and Google App Password; only used in development when `AUTH_EMAIL_MODE=gmail` |
 | `RESEND_API_KEY`, `EMAIL_FROM`                                         | Resend email delivery                       | Resend API key and verified sender domain; used when `AUTH_EMAIL_MODE=resend`                |

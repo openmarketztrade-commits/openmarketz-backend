@@ -13,6 +13,11 @@ export class ListProductsDto {
   category?: string;
 
   @IsOptional()
+  @IsString()
+  @Max(120)
+  sellerSlug?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)

@@ -9,12 +9,22 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service.js';
 import { SaveAddressDto } from './dto/save-address.dto.js';
 
-type PlaceComponent = { longText?: string; types?: string[] };
-type PlaceDetails = {
-  id: string;
-  formattedAddress: string;
-  location: { latitude: number; longitude: number };
-  addressComponents: PlaceComponent[];
+type GeoapifyAddress = {
+  place_id?: string;
+  formatted?: string;
+  country?: string;
+  country_code?: string;
+  state?: string;
+  city?: string;
+  suburb?: string;
+  district?: string;
+  county?: string;
+  lat?: number;
+  lon?: number;
+};
+
+type GeoapifyFeatureCollection = {
+  features?: { properties?: GeoapifyAddress }[];
 };
 
 @Injectable()
@@ -36,45 +46,32 @@ export class AddressesService {
     if (!query || query.length < 3 || query.length > 200) {
       throw new BadRequestException('Enter at least 3 characters to search.');
     }
-    const key = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+    const key = this.config.get<string>('GEOAPIFY_API_KEY');
     if (!key)
       throw new ServiceUnavailableException(
         'Address search is not configured.',
       );
 
-    const response = await fetch(
-      'https://places.googleapis.com/v1/places:autocomplete',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': key,
-          'X-Goog-FieldMask':
-            'suggestions.placePrediction.placeId,suggestions.placePrediction.text.text',
-        },
-        body: JSON.stringify({
-          input: query,
-          includedRegionCodes: ['ng'],
-          languageCode: 'en',
-        }),
-        signal: AbortSignal.timeout(8_000),
-      },
-    );
+    const url = new URL('https://api.geoapify.com/v1/geocode/autocomplete');
+    url.search = new URLSearchParams({
+      text: query,
+      filter: 'countrycode:ng',
+      lang: 'en',
+      limit: '8',
+      format: 'geojson',
+      apiKey: key,
+    }).toString();
+    const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
     if (!response.ok)
       throw new BadGatewayException(
         'Address search is temporarily unavailable.',
       );
-    const payload = (await response.json()) as {
-      suggestions?: {
-        placePrediction?: { placeId?: string; text?: { text?: string } };
-      }[];
-    };
-    return (payload.suggestions ?? []).flatMap((suggestion) => {
-      const prediction = suggestion.placePrediction;
-      return prediction?.placeId && prediction.text?.text
-        ? [{ placeId: prediction.placeId, description: prediction.text.text }]
-        : [];
-    });
+    const payload = (await response.json()) as GeoapifyFeatureCollection;
+    return (payload.features ?? []).flatMap(({ properties }) =>
+      properties?.place_id && properties.formatted
+        ? [{ placeId: properties.place_id, description: properties.formatted }]
+        : [],
+    );
   }
 
   async save(userId: string, input: SaveAddressDto, addressId?: string) {
@@ -89,37 +86,33 @@ export class AddressesService {
       line1: string;
       city: string;
       state: string;
-      googlePlaceId: string | null;
+      providerPlaceId: string | null;
       area: string;
       latitude: number | null;
       longitude: number | null;
     };
-    if (input.googlePlaceId) {
-      const place = await this.getPlace(input.googlePlaceId);
-      const getComponent = (...types: string[]) =>
-        place.addressComponents.find((component) =>
-          component.types?.some((type) => types.includes(type)),
-        )?.longText;
-      if (getComponent('country') !== 'Nigeria') {
+    const selectedPlaceId = input.placeId ?? input.googlePlaceId;
+    if (selectedPlaceId) {
+      const place = await this.getPlace(selectedPlaceId);
+      if (place.country_code?.toLowerCase() !== 'ng') {
         throw new BadRequestException('Delivery addresses must be in Nigeria.');
       }
-      const state = getComponent('administrative_area_level_1');
+      const state = place.state;
       const city =
-        getComponent('sublocality_level_1', 'neighborhood', 'locality') ??
-        getComponent('administrative_area_level_2');
-      if (!state || !city) {
+        place.city ?? place.suburb ?? place.district ?? place.county;
+      if (!place.formatted || !state || !city) {
         throw new BadRequestException(
           'Choose a complete street address in Nigeria.',
         );
       }
       addressDetails = {
-        line1: place.formattedAddress,
+        line1: place.formatted,
         city,
         state,
-        googlePlaceId: place.id,
+        providerPlaceId: place.place_id ?? selectedPlaceId,
         area: city,
-        latitude: place.location.latitude,
-        longitude: place.location.longitude,
+        latitude: place.lat ?? null,
+        longitude: place.lon ?? null,
       };
     } else {
       const line1 = input.line1?.trim();
@@ -134,7 +127,7 @@ export class AddressesService {
         line1,
         city,
         state,
-        googlePlaceId: null,
+        providerPlaceId: null,
         area: city,
         latitude: null,
         longitude: null,
@@ -157,7 +150,9 @@ export class AddressesService {
         country: 'NG',
         landmark: input.landmark?.trim() || null,
         label: input.label,
-        googlePlaceId: addressDetails.googlePlaceId,
+        // Keep writing the existing column until all deployed clients and data
+        // have moved to a provider-neutral schema. Geoapify IDs are opaque IDs.
+        googlePlaceId: addressDetails.providerPlaceId,
         area: addressDetails.area,
         latitude: addressDetails.latitude,
         longitude: addressDetails.longitude,
@@ -196,33 +191,31 @@ export class AddressesService {
     return { success: true };
   }
 
-  private async getPlace(placeId: string): Promise<PlaceDetails> {
-    const key = this.config.get<string>('GOOGLE_MAPS_API_KEY');
+  private async getPlace(placeId: string): Promise<GeoapifyAddress> {
+    const key = this.config.get<string>('GEOAPIFY_API_KEY');
     if (!key)
       throw new ServiceUnavailableException(
         'Address search is not configured.',
       );
-    if (!/^[A-Za-z0-9_-]{5,200}$/.test(placeId)) {
+    if (!/^[A-Za-z0-9_-]{5,300}$/.test(placeId)) {
       throw new BadRequestException(
         'Choose an address from the search results.',
       );
     }
-    const response = await fetch(
-      `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`,
-      {
-        headers: {
-          'X-Goog-Api-Key': key,
-          'X-Goog-FieldMask': 'id,formattedAddress,location,addressComponents',
-        },
-        signal: AbortSignal.timeout(8_000),
-      },
-    );
-    if (response.status === 404)
+    const url = new URL('https://api.geoapify.com/v2/place-details');
+    url.search = new URLSearchParams({ id: placeId, apiKey: key }).toString();
+    const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (response.status === 404 || response.status === 400)
       throw new BadRequestException('Choose a valid address.');
     if (!response.ok)
       throw new BadGatewayException(
         'Address details are temporarily unavailable.',
       );
-    return (await response.json()) as PlaceDetails;
+    const payload = (await response.json()) as GeoapifyFeatureCollection;
+    const place = payload.features?.find(
+      (feature) => feature.properties?.place_id,
+    )?.properties;
+    if (!place) throw new BadRequestException('Choose a valid address.');
+    return place;
   }
 }

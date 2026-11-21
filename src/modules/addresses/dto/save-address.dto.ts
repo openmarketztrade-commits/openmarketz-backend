@@ -12,6 +12,12 @@ export class SaveAddressDto {
   @IsOptional()
   @IsString()
   @Length(5, 200)
+  placeId?: string;
+
+  /** @deprecated Send placeId. Kept temporarily for deployed clients. */
+  @IsOptional()
+  @IsString()
+  @Length(5, 300)
   googlePlaceId?: string;
 
   @IsOptional()

@@ -15,6 +15,7 @@ enum UserStatus {
 
 enum UserRole {
   BUYER
+  SELLER
   ADMIN
 }
 
@@ -265,6 +266,7 @@ model SellerApplication {
   selfieMediaId           String?                 @unique
   status                  SellerApplicationStatus @default(UNDER_REVIEW)
   reviewNote              String?
+  shipbubbleAddressCode   String?
   reviewedAt              DateTime?
   submittedAt             DateTime                @default(now())
   user                    User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -298,6 +300,7 @@ model SellerStore {
   payoutAccount PayoutAccount?
   products      Product[]
   orderItems    OrderItem[]
+  shipments     Shipment[]
   settlements   SellerSettlement[]
   offers        ProductOffer[]
   marketReplies MarketResponse[]
@@ -462,6 +465,7 @@ model Address {
   label       String   @default("Home")
   isDefault   Boolean  @default(false)
   googlePlaceId String?
+  shipbubbleAddressCode String?
   area        String?
   latitude    Float?
   longitude   Float?
@@ -729,6 +733,11 @@ model Shipment {
   trackingUrl  String?
   handedOverAt DateTime?
   deliveredAt  DateTime?
+  sellerId     String?
+  seller       SellerStore?      @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+  providerOrderId String?
+  serviceCode  String?
+  waybillDocument String?
   order        Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt

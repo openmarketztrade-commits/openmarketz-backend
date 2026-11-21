@@ -78,7 +78,7 @@ Relevant modules: [src/modules/catalog](src/modules/catalog), [prisma/schema.pri
 - Get, update, remove, and clear cart items.
 - Saved delivery addresses.
 - Address create, update, default address, and delete operations.
-- Google Places address search and place selection support.
+- Geoapify address autocomplete and place selection support. Configure `GEOAPIFY_API_KEY` in the API environment; the previous Google provider configuration is disabled.
 
 Relevant modules: [src/modules/cart](src/modules/cart), [src/modules/addresses](src/modules/addresses).
 

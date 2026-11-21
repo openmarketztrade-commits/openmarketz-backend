@@ -789,7 +789,15 @@ export class PaymentsService {
       });
       if (updated.count !== 1)
         throw new ConflictException('This payment has already changed.');
-      await tx.shipment.create({ data: { orderId: payment.orderId! } });
+      const shipmentSellerIds = [
+        ...new Set(payment.order!.items.map((item) => item.sellerId)),
+      ];
+      await tx.shipment.createMany({
+        data: shipmentSellerIds.map((sellerId) => ({
+          orderId: payment.orderId!,
+          sellerId,
+        })),
+      });
 
       const itemSubtotal = payment.order!.subtotalKobo;
       const serviceFee = payment.order!.serviceFeeKobo;
