@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -60,6 +61,7 @@ export class AuthController {
     @Req() request: RequestMetadata,
     @Res({ passthrough: true }) response: Response,
   ) {
+    this.assertAllowedOrigin(request);
     const result = await this.auth.verifyEmail(body, this.metadata(request));
     this.setRefreshCookie(response, result.refreshToken);
     return { accessToken: result.accessToken, user: result.user };
@@ -74,6 +76,7 @@ export class AuthController {
     @Req() request: RequestMetadata,
     @Res({ passthrough: true }) response: Response,
   ) {
+    this.assertAllowedOrigin(request);
     const result = await this.auth.login(body, this.metadata(request));
     this.setRefreshCookie(response, result.refreshToken);
     return { accessToken: result.accessToken, user: result.user };
@@ -87,6 +90,7 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
+    this.assertAllowedOrigin(request);
     const result = await this.auth.refresh(
       this.readCookie(request, REFRESH_COOKIE),
       this.metadata(request),
@@ -150,6 +154,21 @@ export class AuthController {
     };
   }
 
+  private assertAllowedOrigin(request: Pick<Request, 'headers'>): void {
+    const origin = request.headers.origin;
+    if (!origin) return;
+
+    const allowedOrigins = this.config
+      .getOrThrow<string>('FRONTEND_ORIGINS')
+      .split(',')
+      .map((allowedOrigin) => allowedOrigin.trim());
+    if (!allowedOrigins.includes(origin)) {
+      throw new ForbiddenException(
+        'This origin is not allowed to authenticate.',
+      );
+    }
+  }
+
   private setRefreshCookie(response: Response, token: string): void {
     response.cookie(REFRESH_COOKIE, token, {
       ...this.cookieOptions(),
@@ -159,10 +178,13 @@ export class AuthController {
 
   private cookieOptions() {
     const domain = this.config.get<string>('COOKIE_DOMAIN');
+    const isProduction = this.config.get<string>('NODE_ENV') === 'production';
     return {
       httpOnly: true,
       secure: this.config.get<boolean>('COOKIE_SECURE', false),
-      sameSite: 'strict' as const,
+      // The frontend (Vercel) and API (Render) are cross-site in production.
+      // SameSite=None is required for the browser to send the refresh cookie.
+      sameSite: isProduction ? ('none' as const) : ('lax' as const),
       path: '/',
       ...(domain ? { domain } : {}),
     };
