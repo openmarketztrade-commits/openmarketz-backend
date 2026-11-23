@@ -11,6 +11,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { PrismaService } from '../../database/prisma.service.js';
 import { ReviewSellerApplicationDto } from './dto/review-seller-application.dto.js';
 import { CreateCategoryDto } from './dto/create-category.dto.js';
+import { UpdateCategoryDto } from './dto/update-category.dto.js';
 
 @Injectable()
 export class AdminService {
@@ -80,6 +81,26 @@ export class AdminService {
       }
       throw error;
     }
+  }
+
+  async updateCategory(id: string, input: UpdateCategoryDto, actorId: string) {
+    const category = await this.prisma.category.findUnique({ where: { id } });
+    if (!category) throw new NotFoundException('Category not found.');
+
+    const updated = await this.prisma.category.update({
+      where: { id },
+      data: { imageUrl: input.imageUrl?.trim() || null },
+    });
+    await this.prisma.auditEvent.create({
+      data: {
+        actorId,
+        action: 'category_updated',
+        targetType: 'category',
+        targetId: id,
+        metadata: { changedFields: ['imageUrl'] },
+      },
+    });
+    return updated;
   }
 
   async updateCategoryStatus(id: string, active: boolean, actorId: string) {

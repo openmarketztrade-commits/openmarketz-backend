@@ -9,6 +9,7 @@ import { AdminService } from './admin.service.js';
 import { GrantAdminDto, UpdateAdminProductStatusDto, UpdateAdminUserRoleDto, UpdateAdminUserStatusDto } from './dto/admin-moderation.dto.js';
 import { CreateCategoryDto } from './dto/create-category.dto.js';
 import { UpdateCategoryStatusDto } from './dto/update-category-status.dto.js';
+import { UpdateCategoryDto } from './dto/update-category.dto.js';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -27,6 +28,16 @@ export class AdminController {
   @ApiOperation({ summary: 'Create a product category' })
   createCategory(@CurrentUser() actor: AuthenticatedUser, @Body() body: CreateCategoryDto) {
     return this.admin.createCategory(body, actor.id);
+  }
+
+  @Patch('categories/:id')
+  @ApiOperation({ summary: 'Update product category details' })
+  updateCategory(
+    @Param('id') id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Body() body: UpdateCategoryDto,
+  ) {
+    return this.admin.updateCategory(id, body, actor.id);
   }
 
   @Patch('categories/:id/status')
