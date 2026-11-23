@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
-  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -79,7 +78,6 @@ export class CreateProductDto {
   minPrice?: number;
 
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(12)
   @IsString({ each: true })
   mediaIds!: string[];

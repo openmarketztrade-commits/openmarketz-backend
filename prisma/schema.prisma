@@ -184,6 +184,7 @@ model User {
   authTokens        AuthToken[]
   sellerApplication SellerApplication?
   store             SellerStore?
+  storeFollows      StoreFollow[]
   addresses         Address[]
   cart              Cart?
   productOffers     ProductOffer[]            @relation("BuyerOffers")
@@ -305,10 +306,22 @@ model SellerStore {
   offers        ProductOffer[]
   marketReplies MarketResponse[]
   reviews       Review[]
+  followers     StoreFollow[]
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
   @@index([active, verified, name])
+}
+
+model StoreFollow {
+  userId    String
+  storeId   String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store     SellerStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([userId, storeId])
+  @@index([storeId, createdAt])
 }
 
 model PayoutAccount {

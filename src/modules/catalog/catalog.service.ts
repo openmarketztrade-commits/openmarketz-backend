@@ -68,6 +68,100 @@ export class CatalogService {
     });
   }
 
+  async listPublicStores(limit = 4) {
+    const stores = await this.prisma.sellerStore.findMany({
+      where: { active: true },
+      include: {
+        logoMedia: { select: { secureUrl: true } },
+        bannerMedia: { select: { secureUrl: true } },
+        _count: {
+          select: {
+            products: { where: { status: ProductStatus.ACTIVE } },
+            followers: true,
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      take: Math.min(Math.max(limit, 1), 100),
+    });
+    return { items: stores.map((store) => ({
+      id: store.id,
+      slug: store.slug,
+      name: store.name,
+      tagline: store.tagline ?? '',
+      about: store.about,
+      location: store.location,
+      verified: store.verified,
+      rating: Number(store.rating),
+      reviewCount: store.reviewCount,
+      logoUrl: store.logoMedia?.secureUrl ?? null,
+      bannerUrl: store.bannerMedia?.secureUrl ?? null,
+      createdAt: store.createdAt,
+      productCount: store._count.products,
+      followerCount: store._count.followers,
+    })) };
+  }
+
+  async listPublicStoreReviews(slug: string) {
+    const store = await this.prisma.sellerStore.findFirst({
+      where: { slug, active: true },
+      select: { id: true },
+    });
+    if (!store) throw new NotFoundException('Store not found.');
+    const reviews = await this.prisma.review.findMany({
+      where: { sellerId: store.id, published: true },
+      include: {
+        user: { select: { firstName: true, lastName: true } },
+        product: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    return { items: reviews.map((review) => ({
+      id: review.id,
+      rating: review.rating,
+      body: review.body,
+      createdAt: review.createdAt,
+      reviewer: `${review.user.firstName} ${review.user.lastName.slice(0, 1)}.`,
+      productName: review.product.name,
+    })) };
+  }
+
+  async getStoreFollowStatus(userId: string, slug: string) {
+    const store = await this.getFollowableStore(slug);
+    const [follow, followerCount] = await Promise.all([
+      this.prisma.storeFollow.findUnique({ where: { userId_storeId: { userId, storeId: store.id } }, select: { userId: true } }),
+      this.prisma.storeFollow.count({ where: { storeId: store.id } }),
+    ]);
+    return { following: Boolean(follow), followerCount };
+  }
+
+  async followStore(userId: string, slug: string) {
+    const store = await this.getFollowableStore(slug);
+    if (store.ownerId === userId) throw new ForbiddenException('You cannot follow your own store.');
+    await this.prisma.storeFollow.upsert({
+      where: { userId_storeId: { userId, storeId: store.id } },
+      create: { userId, storeId: store.id },
+      update: {},
+    });
+    return this.getStoreFollowStatus(userId, slug);
+  }
+
+  async unfollowStore(userId: string, slug: string) {
+    const store = await this.getFollowableStore(slug);
+    await this.prisma.storeFollow.deleteMany({ where: { userId, storeId: store.id } });
+    return this.getStoreFollowStatus(userId, slug);
+  }
+
+  private async getFollowableStore(slug: string) {
+    const store = await this.prisma.sellerStore.findFirst({
+      where: { slug, active: true },
+      select: { id: true, ownerId: true },
+    });
+    if (!store) throw new NotFoundException('Store not found.');
+    return store;
+  }
+
   async listPublicProducts(query: ListProductsDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 24;
@@ -120,7 +214,10 @@ export class CatalogService {
         logoMedia: { select: { secureUrl: true } },
         bannerMedia: { select: { secureUrl: true } },
         _count: {
-          select: { products: { where: { status: ProductStatus.ACTIVE } } },
+          select: {
+            products: { where: { status: ProductStatus.ACTIVE } },
+            followers: true,
+          },
         },
       },
     });
@@ -139,6 +236,7 @@ export class CatalogService {
       bannerUrl: store.bannerMedia?.secureUrl ?? null,
       createdAt: store.createdAt,
       productCount: store._count.products,
+      followerCount: store._count.followers,
     };
   }
 
@@ -208,6 +306,7 @@ export class CatalogService {
       throw new BadRequestException('Choose an active product category.');
 
     const media = await this.findOwnedProductMedia(userId, input.mediaIds);
+    this.validateProductMedia(media);
     const slug = `${this.slugify(input.name)}-${randomUUID().slice(0, 8)}`;
     const status = input.status ?? ProductStatus.ACTIVE;
     const product = await this.prisma.product.create({
@@ -292,6 +391,7 @@ export class CatalogService {
     const media = input.mediaIds
       ? await this.findOwnedProductMedia(userId, input.mediaIds)
       : null;
+    if (media) this.validateProductMedia(media);
     const updated = await this.prisma.$transaction(async (transaction) => {
       if (media) {
         await transaction.productMedia.deleteMany({
@@ -397,6 +497,17 @@ export class CatalogService {
       );
     }
     return ids.map((id) => assets.find((asset) => asset.id === id)!);
+  }
+
+  private validateProductMedia(media: readonly { resourceType: string }[]) {
+    if (!media.length || media[0].resourceType !== 'image') {
+      throw new BadRequestException(
+        'Add at least one product photo first. The main product media must be an image.',
+      );
+    }
+    if (media.filter((asset) => asset.resourceType === 'video').length > 1) {
+      throw new BadRequestException('A product can have at most one video.');
+    }
   }
 
   private validatePrices(
