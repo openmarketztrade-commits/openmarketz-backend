@@ -1,14 +1,16 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ProductStatus, SellerApplicationStatus, UserRole, UserStatus } from '@prisma/client';
+import { Prisma, ProductStatus, SellerApplicationStatus, UserRole, UserStatus } from '@prisma/client';
 import { v2 as cloudinary } from 'cloudinary';
 import { PrismaService } from '../../database/prisma.service.js';
 import { ReviewSellerApplicationDto } from './dto/review-seller-application.dto.js';
+import { CreateCategoryDto } from './dto/create-category.dto.js';
 
 @Injectable()
 export class AdminService {
@@ -21,6 +23,97 @@ export class AdminService {
     const page = Math.max(1, Number.parseInt(pageInput ?? '1', 10) || 1);
     const pageSize = Math.min(100, Math.max(1, Number.parseInt(sizeInput ?? '25', 10) || 25));
     return { page, pageSize, skip: (page - 1) * pageSize };
+  }
+
+  async listCategories() {
+    const items = await this.prisma.category.findMany({
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        description: true,
+        imageUrl: true,
+        active: true,
+        sortOrder: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { products: true } },
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+    return { items };
+  }
+
+  async createCategory(input: CreateCategoryDto, actorId: string) {
+    const name = input.name.trim();
+    const slug = input.slug?.trim() || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (slug.length < 2) {
+      throw new BadRequestException('The category name must contain at least two letters or numbers.');
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const category = await tx.category.create({
+          data: {
+            name,
+            slug,
+            description: input.description.trim(),
+            imageUrl: input.imageUrl?.trim() || null,
+            sortOrder: input.sortOrder ?? 0,
+            active: input.active ?? true,
+          },
+        });
+        await tx.auditEvent.create({
+          data: {
+            actorId,
+            action: 'category_created',
+            targetType: 'category',
+            targetId: category.id,
+            metadata: { name: category.name, slug: category.slug, active: category.active },
+          },
+        });
+        return category;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('A category with this slug already exists.');
+      }
+      throw error;
+    }
+  }
+
+  async updateCategoryStatus(id: string, active: boolean, actorId: string) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const category = await tx.category.findUnique({ where: { id } });
+        if (!category) throw new NotFoundException('Category not found.');
+        if (category.active === active) return category;
+
+        if (!active) {
+          const activeCount = await tx.category.count({ where: { active: true } });
+          if (activeCount <= 1) {
+            throw new ConflictException('At least one active category is required for sellers to list products.');
+          }
+        }
+
+        const updated = await tx.category.update({ where: { id }, data: { active } });
+        await tx.auditEvent.create({
+          data: {
+            actorId,
+            action: active ? 'category_activated' : 'category_deactivated',
+            targetType: 'category',
+            targetId: id,
+            metadata: { previousActive: category.active, active },
+          },
+        });
+        return updated;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw new ConflictException('Categories changed while this update was saving. Refresh the list and try again.');
+      }
+      throw error;
+    }
   }
 
   async listUsers(input: { q?: string; status?: string; role?: string; page?: string; pageSize?: string }) {

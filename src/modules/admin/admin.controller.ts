@@ -1,12 +1,14 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/current-user.decorator.js';
 import type { AuthenticatedUser } from '../../common/authenticated-user.js';
 import { Roles } from '../../common/roles.decorator.js';
 import { ReviewSellerApplicationDto } from './dto/review-seller-application.dto.js';
 import { AdminService } from './admin.service.js';
 import { GrantAdminDto, UpdateAdminProductStatusDto, UpdateAdminUserRoleDto, UpdateAdminUserStatusDto } from './dto/admin-moderation.dto.js';
+import { CreateCategoryDto } from './dto/create-category.dto.js';
+import { UpdateCategoryStatusDto } from './dto/update-category-status.dto.js';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -14,6 +16,28 @@ import { GrantAdminDto, UpdateAdminProductStatusDto, UpdateAdminUserRoleDto, Upd
 @Controller('admin')
 export class AdminController {
   constructor(private readonly admin: AdminService) {}
+
+  @Get('categories')
+  @ApiOperation({ summary: 'List product categories, including inactive categories' })
+  listCategories() {
+    return this.admin.listCategories();
+  }
+
+  @Post('categories')
+  @ApiOperation({ summary: 'Create a product category' })
+  createCategory(@CurrentUser() actor: AuthenticatedUser, @Body() body: CreateCategoryDto) {
+    return this.admin.createCategory(body, actor.id);
+  }
+
+  @Patch('categories/:id/status')
+  @ApiOperation({ summary: 'Activate or deactivate a product category' })
+  updateCategoryStatus(
+    @Param('id') id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Body() body: UpdateCategoryStatusDto,
+  ) {
+    return this.admin.updateCategoryStatus(id, body.active, actor.id);
+  }
 
   @Post('users/admins')
   grantAdmin(@CurrentUser() actor: AuthenticatedUser, @Body() body: GrantAdminDto) {
